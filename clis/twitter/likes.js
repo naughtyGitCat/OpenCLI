@@ -143,10 +143,12 @@ cli({
     args: [
         { name: 'username', type: 'string', positional: true, help: 'Twitter screen name (without @). Defaults to logged-in user.' },
         { name: 'limit', type: 'int', default: 20 },
+        { name: 'all', type: 'bool', default: false, help: 'Fetch all liked-tweet pages until exhausted' },
     ],
     columns: ['author', 'name', 'text', 'likes', 'url'],
     func: async (page, kwargs) => {
-        const limit = kwargs.limit || 20;
+        const fetchAll = Boolean(kwargs.all);
+        const limit = fetchAll ? Number.POSITIVE_INFINITY : (kwargs.limit || 20);
         let username = (kwargs.username || '').replace(/^@/, '');
         await page.goto('https://x.com');
         await page.wait(3);
@@ -188,8 +190,9 @@ cli({
         const allTweets = [];
         const seen = new Set();
         let cursor = null;
-        for (let i = 0; i < 5 && allTweets.length < limit; i++) {
-            const fetchCount = Math.min(100, limit - allTweets.length + 10);
+        while (fetchAll || allTweets.length < limit) {
+            const remaining = fetchAll ? 100 : (limit - allTweets.length + 10);
+            const fetchCount = Math.min(100, remaining);
             const apiUrl = buildLikesUrl(likesQueryId, userId, fetchCount, cursor);
             const data = await page.evaluate(`async () => {
         const r = await fetch("${apiUrl}", { headers: ${headers}, credentials: 'include' });
@@ -206,7 +209,7 @@ cli({
                 break;
             cursor = nextCursor;
         }
-        return allTweets.slice(0, limit);
+        return fetchAll ? allTweets : allTweets.slice(0, limit);
     },
 });
 export const __test__ = {
