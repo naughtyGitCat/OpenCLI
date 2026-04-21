@@ -13954,6 +13954,12 @@
         "default": false,
         "required": false,
         "help": "Fetch all bookmark pages until exhausted"
+      },
+      {
+        "name": "resume-file",
+        "type": "string",
+        "required": false,
+        "help": "Resume file for long-running all-pages bookmark syncs"
       }
     ],
     "columns": [
@@ -14210,6 +14216,12 @@
         "default": false,
         "required": false,
         "help": "Fetch all liked-tweet pages until exhausted"
+      },
+      {
+        "name": "resume-file",
+        "type": "string",
+        "required": false,
+        "help": "Resume file for long-running all-pages likes syncs"
       }
     ],
     "columns": [

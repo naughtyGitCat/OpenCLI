@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
 const BEARER_TOKEN = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
@@ -96,6 +97,34 @@ function parseBookmarks(data, seen) {
     }
     return { tweets, nextCursor };
 }
+function readResumeFile(filePath) {
+    if (!filePath || !fs.existsSync(filePath))
+        return null;
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return {
+            cursor: parsed?.cursor || null,
+            tweets: Array.isArray(parsed?.tweets) ? parsed.tweets : [],
+        };
+    }
+    catch {
+        return null;
+    }
+}
+function writeResumeFile(filePath, payload) {
+    if (!filePath)
+        return;
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2) + '\n');
+}
+function removeResumeFile(filePath) {
+    if (!filePath)
+        return;
+    try {
+        fs.rmSync(filePath, { force: true });
+    }
+    catch {
+    }
+}
 cli({
     site: 'twitter',
     name: 'bookmarks',
@@ -106,11 +135,13 @@ cli({
     args: [
         { name: 'limit', type: 'int', default: 20 },
         { name: 'all', type: 'bool', default: false, help: 'Fetch all bookmark pages until exhausted' },
+        { name: 'resume-file', type: 'string', help: 'Resume file for long-running all-pages bookmark syncs' },
     ],
     columns: ['author', 'text', 'likes', 'url'],
     func: async (page, kwargs) => {
         const fetchAll = Boolean(kwargs.all);
         const limit = fetchAll ? Number.POSITIVE_INFINITY : (kwargs.limit || 20);
+        const resumeFile = kwargs['resume-file'] || '';
         await page.goto('https://x.com');
         await page.wait(3);
         const ct0 = await page.evaluate(`() => {
@@ -148,9 +179,10 @@ cli({
             'X-Twitter-Auth-Type': 'OAuth2Session',
             'X-Twitter-Active-User': 'yes',
         });
-        const allTweets = [];
-        const seen = new Set();
-        let cursor = null;
+        const resumed = fetchAll ? readResumeFile(resumeFile) : null;
+        const allTweets = resumed?.tweets ? [...resumed.tweets] : [];
+        const seen = new Set(allTweets.map((tweet) => tweet?.id).filter(Boolean));
+        let cursor = resumed?.cursor || null;
         while (fetchAll || allTweets.length < limit) {
             const remaining = fetchAll ? 100 : (limit - allTweets.length + 10);
             const fetchCount = Math.min(100, remaining);
@@ -166,10 +198,18 @@ cli({
             }
             const { tweets, nextCursor } = parseBookmarks(data, seen);
             allTweets.push(...tweets);
+            writeResumeFile(resumeFile, {
+                cursor: nextCursor || null,
+                tweets: allTweets,
+                updatedAt: new Date().toISOString(),
+                complete: !nextCursor || nextCursor === cursor,
+                source: 'bookmarks',
+            });
             if (!nextCursor || nextCursor === cursor)
                 break;
             cursor = nextCursor;
         }
+        removeResumeFile(resumeFile);
         return fetchAll ? allTweets : allTweets.slice(0, limit);
     },
 });
