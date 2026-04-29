@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
 const BEARER_TOKEN = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
@@ -104,12 +105,53 @@ function readResumeFile(filePath) {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         return {
             cursor: parsed?.cursor || null,
+            count: Number(parsed?.count || 0),
             tweets: Array.isArray(parsed?.tweets) ? parsed.tweets : [],
         };
     }
     catch {
         return null;
     }
+}
+function ensureParentDir(filePath) {
+    if (!filePath)
+        return;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+function removeFile(filePath) {
+    if (!filePath)
+        return;
+    try {
+        fs.rmSync(filePath, { force: true });
+    }
+    catch {
+    }
+}
+function loadSeenIdsFromJsonl(filePath) {
+    const seen = new Set();
+    if (!filePath || !fs.existsSync(filePath))
+        return seen;
+    const text = fs.readFileSync(filePath, 'utf8');
+    for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed)
+            continue;
+        try {
+            const row = JSON.parse(trimmed);
+            if (row?.id)
+                seen.add(String(row.id));
+        }
+        catch {
+        }
+    }
+    return seen;
+}
+function appendJsonlRows(filePath, rows) {
+    if (!filePath || !Array.isArray(rows) || rows.length === 0)
+        return;
+    ensureParentDir(filePath);
+    const text = rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
+    fs.appendFileSync(filePath, text, 'utf8');
 }
 function writeResumeFile(filePath, payload) {
     if (!filePath)
@@ -136,12 +178,15 @@ cli({
         { name: 'limit', type: 'int', default: 20 },
         { name: 'all', type: 'bool', default: false, help: 'Fetch all bookmark pages until exhausted' },
         { name: 'resume-file', type: 'string', help: 'Resume file for long-running all-pages bookmark syncs' },
+        { name: 'output-file', type: 'string', help: 'Write all-page results to a JSONL file instead of returning one large JSON array' },
     ],
     columns: ['author', 'text', 'likes', 'url'],
     func: async (page, kwargs) => {
         const fetchAll = Boolean(kwargs.all);
         const limit = fetchAll ? Number.POSITIVE_INFINITY : (kwargs.limit || 20);
         const resumeFile = kwargs['resume-file'] || '';
+        const outputFile = kwargs['output-file'] || '';
+        const useOutputFile = Boolean(fetchAll && outputFile);
         await page.goto('https://x.com');
         await page.wait(3);
         const ct0 = await page.evaluate(`() => {
@@ -179,12 +224,24 @@ cli({
             'X-Twitter-Auth-Type': 'OAuth2Session',
             'X-Twitter-Active-User': 'yes',
         });
-        const resumed = fetchAll ? readResumeFile(resumeFile) : null;
-        const allTweets = resumed?.tweets ? [...resumed.tweets] : [];
-        const seen = new Set(allTweets.map((tweet) => tweet?.id).filter(Boolean));
+        let resumed = fetchAll ? readResumeFile(resumeFile) : null;
+        if (useOutputFile && resumed && !fs.existsSync(outputFile)) {
+            removeResumeFile(resumeFile);
+            resumed = null;
+        }
+        if (useOutputFile && !resumed)
+            removeFile(outputFile);
+        const allTweets = useOutputFile ? [] : (resumed?.tweets ? [...resumed.tweets] : []);
+        const seen = useOutputFile
+            ? loadSeenIdsFromJsonl(outputFile)
+            : new Set(allTweets.map((tweet) => tweet?.id).filter(Boolean));
+        let outputCount = useOutputFile
+            ? Math.max(seen.size, Number(resumed?.count || 0))
+            : 0;
         let cursor = resumed?.cursor || null;
         while (fetchAll || allTweets.length < limit) {
-            const remaining = fetchAll ? 100 : (limit - allTweets.length + 10);
+            const currentCount = useOutputFile ? outputCount : allTweets.length;
+            const remaining = fetchAll ? 100 : (limit - currentCount + 10);
             const fetchCount = Math.min(100, remaining);
             const apiUrl = buildBookmarksUrl(fetchCount, cursor).replace(BOOKMARKS_QUERY_ID, queryId);
             const data = await page.evaluate(`async () => {
@@ -192,24 +249,40 @@ cli({
         return r.ok ? await r.json() : { error: r.status };
       }`);
             if (data?.error) {
-                if (allTweets.length === 0)
+                if ((useOutputFile ? outputCount : allTweets.length) === 0)
                     throw new CommandExecutionError(`HTTP ${data.error}: Failed to fetch bookmarks. queryId may have expired.`);
                 break;
             }
             const { tweets, nextCursor } = parseBookmarks(data, seen);
-            allTweets.push(...tweets);
+            if (useOutputFile) {
+                appendJsonlRows(outputFile, tweets);
+                outputCount += tweets.length;
+            }
+            else {
+                allTweets.push(...tweets);
+            }
             writeResumeFile(resumeFile, {
                 cursor: nextCursor || null,
-                tweets: allTweets,
+                count: useOutputFile ? outputCount : allTweets.length,
+                tweets: useOutputFile ? undefined : allTweets,
                 updatedAt: new Date().toISOString(),
                 complete: !nextCursor || nextCursor === cursor,
                 source: 'bookmarks',
+                outputFile: useOutputFile ? outputFile : null,
             });
             if (!nextCursor || nextCursor === cursor)
                 break;
             cursor = nextCursor;
         }
         removeResumeFile(resumeFile);
+        if (useOutputFile) {
+            return {
+                outputFile,
+                count: outputCount,
+                source: 'bookmarks',
+                complete: true,
+            };
+        }
         return fetchAll ? allTweets : allTweets.slice(0, limit);
     },
 });

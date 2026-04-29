@@ -13960,6 +13960,12 @@
         "type": "string",
         "required": false,
         "help": "Resume file for long-running all-pages bookmark syncs"
+      },
+      {
+        "name": "output-file",
+        "type": "string",
+        "required": false,
+        "help": "Write all-page results to a JSONL file instead of returning one large JSON array"
       }
     ],
     "columns": [
@@ -14222,6 +14228,12 @@
         "type": "string",
         "required": false,
         "help": "Resume file for long-running all-pages likes syncs"
+      },
+      {
+        "name": "output-file",
+        "type": "string",
+        "required": false,
+        "help": "Write all-page results to a JSONL file instead of returning one large JSON array"
       }
     ],
     "columns": [
